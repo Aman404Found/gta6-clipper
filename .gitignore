@@ -1,2 +1,14 @@
 out/
 node_modules/
+scratch/
+clip-scratch*/
+renders/
+*.mp4
+*.webm
+*.mkv
+*.mov
+*.m4a
+*.part
+*.ytdl
+*.info.json
+.env

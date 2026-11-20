@@ -1,83 +1,44 @@
-// gta6-clipper-01: entry program, Node 22, standard library only, no network.
-//
-// The thing that is graded is the YouTube video named in VIDEO.json; this
-// program only has to put that file where the grader reads it. I keep the copy
-// simple on purpose, but not silent: if VIDEO.json is missing, malformed or
-// still holds the placeholder address, the program says so here instead of
-// letting the intake check refuse the entry later.
+import { readFileSync, mkdirSync, writeFileSync } from 'node:fs';
+import { resolve, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-import { copyFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+// Resolve beside this entrypoint unless the harness supplies its repository root.
+const root = process.env.MAKEFUN_BOT_DIR ?? dirname(fileURLToPath(import.meta.url));
+const destination = resolve(process.env.MAKEFUN_OUTPUT_DIR ?? '/output', 'VIDEO.json');
 
-const BOT_DIR = process.env.MAKEFUN_BOT_DIR ?? '/bot';
-const OUTPUT_DIR = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
-
-const SOURCE = join(BOT_DIR, 'VIDEO.json');
-const TARGET = join(OUTPUT_DIR, 'VIDEO.json');
-const MAX_BYTES = 16_384;
-
-// A YouTube video id is 11 characters; these are the address shapes the intake
-// check reads (a Short, a watch link with or without extra parameters, or a
-// youtu.be short link).
-const YOUTUBE_ID = /^[A-Za-z0-9_-]{11}$/;
-const ADDRESS_SHAPES: Array<{ test: RegExp; id: (m: RegExpMatchArray) => string }> = [
-  { test: /^https?:\/\/(?:www\.|m\.)?youtube\.com\/shorts\/([A-Za-z0-9_-]+)\/?/, id: (m) => m[1] },
-  { test: /^https?:\/\/(?:www\.|m\.)?youtube\.com\/watch\?(?:.*&)?v=([A-Za-z0-9_-]+)/, id: (m) => m[1] },
-  { test: /^https?:\/\/youtu\.be\/([A-Za-z0-9_-]+)\/?/, id: (m) => m[1] },
-];
-
-type VideoLink = { url?: unknown };
-
-function readVideoUrl(): string {
-  if (!existsSync(SOURCE)) {
-    throw new Error(`VIDEO.json is not in ${BOT_DIR}`);
+function validateAddress(value: unknown): void {
+  if (typeof value !== 'string') throw new Error('VIDEO.json needs a url string');
+  if (value.length > 2048 || value.trim() !== value || /[\x00-\x20\x7f]/.test(value)) {
+    throw new Error('VIDEO.json url must be at most 2048 characters with no whitespace or control characters');
   }
-
-  const raw = readFileSync(SOURCE, 'utf8');
-  const bytes = Buffer.byteLength(raw, 'utf8');
-  if (bytes > MAX_BYTES) {
-    throw new Error(`VIDEO.json is ${bytes} bytes, over the ${MAX_BYTES}-byte cap`);
+  let address: URL;
+  try { address = new URL(value); }
+  catch { throw new Error('VIDEO.json does not name a YouTube video address'); }
+  const hosts = new Set(['youtube.com', 'www.youtube.com', 'm.youtube.com']);
+  let id: string | null = null;
+  if (address.hostname === 'youtu.be') {
+    id = /^\/([A-Za-z0-9_-]{11})\/?$/.exec(address.pathname)?.[1] ?? null;
+  } else if (hosts.has(address.hostname)) {
+    if (address.pathname === '/watch') id = address.searchParams.get('v');
+    else id = /^\/shorts\/([A-Za-z0-9_-]{11})\/?$/.exec(address.pathname)?.[1] ?? null;
   }
-
-  let parsed: VideoLink;
-  try {
-    parsed = JSON.parse(raw) as VideoLink;
-  } catch {
-    throw new Error('VIDEO.json is not valid JSON');
+  if (address.protocol !== 'https:' || address.username || address.password ||
+      address.port || !id || !/^[A-Za-z0-9_-]{11}$/.test(id)) {
+    throw new Error('VIDEO.json does not name a YouTube video address. Replace the placeholder with your public upload: HTTPS YouTube shorts, watch?v=, or youtu.be, with an 11-character video ID.');
   }
-
-  if (typeof parsed.url !== 'string' || parsed.url.length === 0) {
-    throw new Error('VIDEO.json holds no url string');
-  }
-  return parsed.url;
-}
-
-function videoIdOf(url: string): string | null {
-  for (const shape of ADDRESS_SHAPES) {
-    const match = url.match(shape.test);
-    if (match) {
-      const id = shape.id(match);
-      return YOUTUBE_ID.test(id) ? id : null;
-    }
-  }
-  return null;
 }
 
 try {
-  const url = readVideoUrl();
-  const id = videoIdOf(url);
-  if (id === null) {
-    console.error(
-      `VIDEO.json does not name a YouTube video: ${url}\n` +
-        'expected https://www.youtube.com/shorts/<11-char id>, a /watch?v= address, or a youtu.be link',
-    );
-    process.exit(1);
+  const bytes = readFileSync(resolve(root, 'VIDEO.json'));
+  if (bytes.length > 16384) throw new Error('VIDEO.json exceeds 16384 bytes');
+  const data: unknown = JSON.parse(bytes.toString('utf8'));
+  if (data === null || typeof data !== 'object' || Array.isArray(data)) {
+    throw new Error('VIDEO.json must contain a JSON object');
   }
-
-  mkdirSync(OUTPUT_DIR, { recursive: true });
-  copyFileSync(SOURCE, TARGET);
-  console.log(`VIDEO.json published to ${TARGET}: video ${id}`);
-} catch (err) {
-  console.error(`main.ts stopped: ${(err as Error).message}`);
-  process.exit(1);
+  validateAddress((data as { url?: unknown }).url);
+  mkdirSync(dirname(destination), { recursive: true });
+  writeFileSync(destination, bytes);
+} catch (failure) {
+  console.error(`Entry failed: ${failure instanceof Error ? failure.message : String(failure)}`);
+  process.exitCode = 1;
 }
